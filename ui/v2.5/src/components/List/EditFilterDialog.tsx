@@ -193,7 +193,8 @@ const CriterionOptionList: React.FC<ICriterionList> = ({
 const FilterModeToConfigKey = {
   [FilterMode.Galleries]: "galleries",
   [FilterMode.Images]: "images",
-  [FilterMode.Movies]: "movies",
+  [FilterMode.Movies]: "groups",
+  [FilterMode.Groups]: "groups",
   [FilterMode.Performers]: "performers",
   [FilterMode.SceneMarkers]: "sceneMarkers",
   [FilterMode.Scenes]: "scenes",
@@ -242,11 +243,13 @@ export const EditFilterDialog: React.FC<IEditFilterProps> = ({
   }, [currentFilter.mode]);
 
   const criterionOptions = useMemo(() => {
-    return [...filterOptions.criterionOptions].sort((a, b) => {
-      return intl
-        .formatMessage({ id: a.messageID })
-        .localeCompare(intl.formatMessage({ id: b.messageID }));
-    });
+    return [...filterOptions.criterionOptions]
+      .filter((c) => !c.hidden)
+      .sort((a, b) => {
+        return intl
+          .formatMessage({ id: a.messageID })
+          .localeCompare(intl.formatMessage({ id: b.messageID }));
+      });
   }, [intl, filterOptions.criterionOptions]);
 
   const optionSelected = useCallback(

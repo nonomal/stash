@@ -134,6 +134,9 @@ type ScanOptions struct {
 	HandlerRequiredFilters []Filter
 
 	ParallelTasks int
+
+	// When true files in path will be rescanned even if they haven't changed
+	Rescan bool
 }
 
 // Scan starts the scanning process.
@@ -338,7 +341,7 @@ func (s *scanJob) acceptEntry(ctx context.Context, path string, info fs.FileInfo
 }
 
 func (s *scanJob) scanZipFile(ctx context.Context, f scanFile) error {
-	zipFS, err := f.fs.OpenZip(f.Path)
+	zipFS, err := f.fs.OpenZip(f.Path, f.Size)
 	if err != nil {
 		if errors.Is(err, errNotReaderAt) {
 			// can't walk the zip file
@@ -835,7 +838,7 @@ func (s *scanJob) getFileFS(f *models.BaseFile) (models.FS, error) {
 	}
 
 	zipPath := f.ZipFile.Base().Path
-	return fs.OpenZip(zipPath)
+	return fs.OpenZip(zipPath, f.Size)
 }
 
 func (s *scanJob) handleRename(ctx context.Context, f models.File, fp []models.Fingerprint) (models.File, error) {
@@ -1023,14 +1026,20 @@ func (s *scanJob) onExistingFile(ctx context.Context, f scanFile, existing model
 
 	fileModTime := f.ModTime
 	updated := !fileModTime.Equal(base.ModTime)
+	forceRescan := s.options.Rescan
 
-	if !updated {
+	if !updated && !forceRescan {
 		return s.onUnchangedFile(ctx, f, existing)
 	}
 
 	oldBase := *base
 
-	logger.Infof("%s has been updated: rescanning", path)
+	if !updated && forceRescan {
+		logger.Infof("rescanning %s", path)
+	} else {
+		logger.Infof("%s has been updated: rescanning", path)
+	}
+
 	base.ModTime = fileModTime
 	base.Size = f.Size
 	base.UpdatedAt = time.Now()
@@ -1091,7 +1100,8 @@ func (s *scanJob) removeOutdatedFingerprints(existing models.File, fp models.Fin
 
 	// oshash has changed, MD5 is missing - remove MD5 from the existing fingerprints
 	logger.Infof("Removing outdated checksum from %s", existing.Base().Path)
-	existing.Base().Fingerprints.Remove(models.FingerprintTypeMD5)
+	b := existing.Base()
+	b.Fingerprints = b.Fingerprints.Remove(models.FingerprintTypeMD5)
 }
 
 // returns a file only if it was updated

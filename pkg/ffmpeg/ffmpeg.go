@@ -16,34 +16,55 @@ import (
 	"github.com/stashapp/stash/pkg/logger"
 )
 
-func ValidateFFMpeg(ffmpegPath string) error {
+func ffmpegHelp(ffmpegPath string) (string, error) {
 	cmd := stashExec.Command(ffmpegPath, "-h")
 	bytes, err := cmd.CombinedOutput()
 	output := string(bytes)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return fmt.Errorf("error running ffmpeg: %v", output)
+			return "", fmt.Errorf("error running ffmpeg: %v", output)
 		}
 
-		return fmt.Errorf("error running ffmpeg: %v", err)
+		return "", fmt.Errorf("error running ffmpeg: %v", err)
 	}
 
+	return output, nil
+}
+
+func ValidateFFMpeg(ffmpegPath string) error {
+	_, err := ffmpegHelp(ffmpegPath)
+	return err
+}
+
+func ValidateFFMpegCodecSupport(ffmpegPath string) error {
+	output, err := ffmpegHelp(ffmpegPath)
+	if err != nil {
+		return err
+	}
+
+	var missingSupport []string
+
 	if !strings.Contains(output, "--enable-libopus") {
-		return fmt.Errorf("ffmpeg is missing libopus support")
+		missingSupport = append(missingSupport, "libopus")
 	}
 	if !strings.Contains(output, "--enable-libvpx") {
-		return fmt.Errorf("ffmpeg is missing libvpx support")
+		missingSupport = append(missingSupport, "libvpx")
 	}
 	if !strings.Contains(output, "--enable-libx264") {
-		return fmt.Errorf("ffmpeg is missing libx264 support")
+		missingSupport = append(missingSupport, "libx264")
 	}
 	if !strings.Contains(output, "--enable-libx265") {
-		return fmt.Errorf("ffmpeg is missing libx265 support")
+		missingSupport = append(missingSupport, "libx265")
 	}
 	if !strings.Contains(output, "--enable-libwebp") {
-		return fmt.Errorf("ffmpeg is missing libwebp support")
+		missingSupport = append(missingSupport, "libwebp")
 	}
+
+	if len(missingSupport) > 0 {
+		return fmt.Errorf("ffmpeg missing codec support: %v", missingSupport)
+	}
+
 	return nil
 }
 
@@ -53,7 +74,7 @@ func LookPathFFMpeg() string {
 	if ret != "" {
 		// ensure ffmpeg has the correct flags
 		if err := ValidateFFMpeg(ret); err != nil {
-			logger.Warnf("ffmpeg found in PATH (%s), but it is missing required flags: %v", ret, err)
+			logger.Warnf("ffmpeg found (%s), could not be executed: %v", ret, err)
 			ret = ""
 		}
 	}
@@ -67,7 +88,7 @@ func FindFFMpeg(path string) string {
 	if ret != "" {
 		// ensure ffmpeg has the correct flags
 		if err := ValidateFFMpeg(ret); err != nil {
-			logger.Warnf("ffmpeg found (%s), but it is missing required flags: %v", ret, err)
+			logger.Warnf("ffmpeg found (%s), could not be executed: %v", ret, err)
 			ret = ""
 		}
 	}
@@ -77,24 +98,54 @@ func FindFFMpeg(path string) string {
 
 // ResolveFFMpeg attempts to resolve the path to the ffmpeg executable.
 // It first looks in the provided path, then resolves from the environment, and finally looks in the fallback path.
+// It will prefer an ffmpeg binary that has the required codec support.
 // Returns an empty string if a valid ffmpeg cannot be found.
 func ResolveFFMpeg(path string, fallbackPath string) string {
+	var ret string
 	// look in the provided path first
-	ret := FindFFMpeg(path)
-	if ret != "" {
-		return ret
+	pathFound := FindFFMpeg(path)
+	if pathFound != "" {
+		err := ValidateFFMpegCodecSupport(pathFound)
+		if err == nil {
+			return pathFound
+		}
+
+		logger.Warnf("ffmpeg found (%s), but it is missing required flags: %v", pathFound, err)
+		ret = pathFound
 	}
 
 	// then resolve from the environment
-	ret = LookPathFFMpeg()
-	if ret != "" {
-		return ret
+	envFound := LookPathFFMpeg()
+	if envFound != "" {
+		err := ValidateFFMpegCodecSupport(envFound)
+		if err == nil {
+			return envFound
+		}
+
+		logger.Warnf("ffmpeg found (%s), but it is missing required flags: %v", envFound, err)
+		if ret == "" {
+			ret = envFound
+		}
 	}
 
 	// finally, look in the fallback path
-	ret = FindFFMpeg(fallbackPath)
+	fallbackFound := FindFFMpeg(fallbackPath)
+	if fallbackFound != "" {
+		err := ValidateFFMpegCodecSupport(fallbackFound)
+		if err == nil {
+			return fallbackFound
+		}
+
+		logger.Warnf("ffmpeg found (%s), but it is missing required flags: %v", fallbackFound, err)
+		if ret == "" {
+			ret = fallbackFound
+		}
+	}
+
 	return ret
 }
+
+var version_re = regexp.MustCompile(`ffmpeg version n?((\d+)\.(\d+)(?:\.(\d+))?)`)
 
 func (f *FFMpeg) getVersion() error {
 	var args Args
@@ -109,7 +160,6 @@ func (f *FFMpeg) getVersion() error {
 		return err
 	}
 
-	version_re := regexp.MustCompile(`ffmpeg version ((\d+)\.(\d+)(?:\.(\d+))?)`)
 	stdoutStr := stdout.String()
 	match := version_re.FindStringSubmatchIndex(stdoutStr)
 	if match == nil {
@@ -134,22 +184,40 @@ func (f *FFMpeg) getVersion() error {
 	if i, err := strconv.Atoi(patchS); err == nil {
 		f.version.patch = i
 	}
-	logger.Debugf("FFMpeg version %d.%d.%d detected", f.version.major, f.version.minor, f.version.patch)
+	logger.Debugf("FFMpeg version %s detected", f.version.String())
 
 	return nil
 }
 
 // FFMpeg version params
-type FFMpegVersion struct {
+type Version struct {
 	major int
 	minor int
 	patch int
 }
 
+// Gteq returns true if the version is greater than or equal to the other version.
+func (v Version) Gteq(other Version) bool {
+	if v.major > other.major {
+		return true
+	}
+	if v.major == other.major && v.minor > other.minor {
+		return true
+	}
+	if v.major == other.major && v.minor == other.minor && v.patch >= other.patch {
+		return true
+	}
+	return false
+}
+
+func (v Version) String() string {
+	return fmt.Sprintf("%d.%d.%d", v.major, v.minor, v.patch)
+}
+
 // FFMpeg provides an interface to ffmpeg.
 type FFMpeg struct {
 	ffmpeg         string
-	version        FFMpegVersion
+	version        Version
 	hwCodecSupport []VideoCodec
 }
 

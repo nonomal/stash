@@ -69,6 +69,8 @@ const Scene: React.FC<{
           : undefined
       }
       showLightboxImage={showLightboxImage}
+      queue={queue}
+      index={index}
     >
       {searchResult && searchResult.results?.length ? (
         <SceneSearchResults scenes={searchResult.results} target={scene} />
@@ -264,7 +266,7 @@ export const Tagger: React.FC<ITaggerProps> = ({ scenes, queue }) => {
         <div>
           {filteredScenes.map((s, i) => (
             <Scene
-              key={i}
+              key={s.id}
               scene={s}
               searchResult={searchResults[s.id]}
               index={i}
